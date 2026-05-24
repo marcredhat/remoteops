@@ -12,6 +12,14 @@
 # - Honors $S1_XDR_OUTPUT_FILE_PATH for the dataset.json summary
 set -uo pipefail
 
+# RemoteOps runs as a service with a minimal environment; provide sane defaults
+# so 'set -u' does not abort on unset HOME/USER/PATH.
+: "${HOME:=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}"
+: "${HOME:=/tmp}"
+: "${USER:=$(id -un 2>/dev/null || echo remoteops)}"
+: "${PATH:=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export HOME USER PATH
+
 echo "===== RemoteOps: bumblebee deep exposure scan ====="
 uname -a
 id
