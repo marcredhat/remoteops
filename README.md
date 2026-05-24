@@ -23,16 +23,28 @@ Deep supply-chain exposure scan for RHEL 10 (and other Linux) endpoints using
 
 Outputs:
 
-| File | Purpose |
-| --- | --- |
-| `inventory.jsonl` | Deep baseline package/extension inventory |
-| `findings/<catalog>.jsonl` | Per-catalog findings (findings-only mode) |
-| `findings_all.jsonl` | Merged findings, each line tagged with `catalog` |
-| `findings_summary.csv` | `catalog,findings,exit_code` summary |
-| `dataset.json` | Run-level XDR summary |
+| File | `RecordType` | Purpose |
+| --- | --- | --- |
+| `Bumblebee_Endpoint.json` | `BumblebeeEndpointInfo` | Host/OS metadata for the run |
+| `Bumblebee_Inventory.jsonl` | `BumblebeeInventory` | Deep baseline package/extension inventory (each line enriched with hostname/OS) |
+| `findings/Bumblebee_Findings_<catalog>.jsonl` | `BumblebeeFinding` | Per-catalog findings |
+| `Bumblebee_Findings.jsonl` | `BumblebeeFinding` | Merged findings across all catalogs |
+| `Bumblebee_Summary.csv` | `BumblebeeFindingSummary` | Per-catalog counts + hostname + collection time |
+| `Bumblebee_Run.json` (or `$S1_XDR_OUTPUT_FILE_PATH`) | `BumblebeeScanSummary` | Run-level XDR summary |
+| `Bumblebee_Run.log` | (text) | Per-step run log, one event per line |
 
-A final **STDOUT JSON line** (`{"event":"bumblebee_scan_summary",...}`) is also
-emitted. STDOUT is always collected by newer Agents, so this guarantees a
+Every emitted JSON line carries `RecordType`, `hostname`, `os_id`, `os_version`,
+`os_build`, `os_arch`, `collection_utc`, `tool`, so SDL queries can filter by
+`RecordType='BumblebeeFinding'` without needing to join against the endpoint
+record.
+
+Local CLI flag:
+
+- `--add-date` — append a UTC timestamp to output file names (ignored under
+  RemoteOps to keep names deterministic for collection).
+
+A final **STDOUT JSON line** (`{"RecordType":"BumblebeeScanSummary",...}`) is
+also emitted. STDOUT is always collected by newer Agents, so this guarantees a
 queryable summary in Singularity Data Lake even when file collection is not
 configured for `$S1_OUTPUT_DIR_PATH`.
 

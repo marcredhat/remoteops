@@ -20,10 +20,39 @@ set -uo pipefail
 : "${PATH:=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export HOME USER PATH
 
+# CLI flags
+ADD_DATE=false
+for arg in "$@"; do
+    case "$arg" in
+        --add-date) ADD_DATE=true ;;
+    esac
+done
+
+test_is_remote_ops() { [ -n "${S1_OUTPUT_DIR_PATH:-}" ]; }
+
+# Endpoint metadata, computed once and embedded in every record
+HOSTNAME_VAL="$(hostname 2>/dev/null || echo unknown)"
+OS_ID="linux"; OS_VERSION=""
+if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-linux}"
+    OS_VERSION="${VERSION_ID:-}"
+fi
+OS_BUILD="$(uname -r 2>/dev/null || echo unknown)"
+OS_ARCH="$(uname -m 2>/dev/null || echo unknown)"
+COLLECTION_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+START_UTC="$COLLECTION_UTC"
+
 echo "===== RemoteOps: bumblebee deep exposure scan ====="
 uname -a
 id
-date -u +"start_utc=%Y-%m-%dT%H:%M:%SZ"
+echo "start_utc=$START_UTC"
+if test_is_remote_ops; then
+    echo "context=RemoteOps (S1_OUTPUT_DIR_PATH is set)"
+else
+    echo "context=interactive"
+fi
 
 # ---------- output dir (SentinelOne RemoteOps convention) ----------
 # Pick a directory we can actually write to.
@@ -75,6 +104,67 @@ CATALOG_DIR="$WORK_DIR/threat_intel"
 FINDINGS_DIR="${OUT_DIR}findings"
 mkdir -p "$CATALOG_DIR" "$FINDINGS_DIR" \
   || { echo "ERROR: cannot create work/findings dirs"; exit 6; }
+
+# Deterministic output file names (optionally date-suffixed for local re-runs)
+DATE_SUFFIX=""
+if [ "$ADD_DATE" = true ] && ! test_is_remote_ops; then
+    DATE_SUFFIX="_$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+INV="${OUT_DIR}Bumblebee_Inventory${DATE_SUFFIX}.jsonl"
+MERGED="${OUT_DIR}Bumblebee_Findings${DATE_SUFFIX}.jsonl"
+SUMMARY_CSV="${OUT_DIR}Bumblebee_Summary${DATE_SUFFIX}.csv"
+ENDPOINT_JSON="${OUT_DIR}Bumblebee_Endpoint${DATE_SUFFIX}.json"
+RUN_LOG="${OUT_DIR}Bumblebee_Run${DATE_SUFFIX}.log"
+: > "$RUN_LOG" 2>/dev/null || true
+
+write_log() {
+    local msg="$1"; local level="${2:-INFO}"
+    local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local line="[$ts] [$level] $msg"
+    echo "$line" >&2
+    [ -n "$RUN_LOG" ] && echo "$line" >> "$RUN_LOG" 2>/dev/null || true
+}
+
+# Minimal JSON string escape (handles \\ and ")
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+# Build the suffix injected into every emitted JSON line for SDL enrichment.
+# Format: ,"RecordType":"...","hostname":"...",...   (no leading {, no trailing })
+ENRICH_BASE=",\"hostname\":\"$(json_escape "$HOSTNAME_VAL")\""
+ENRICH_BASE="$ENRICH_BASE,\"os_id\":\"$(json_escape "$OS_ID")\""
+ENRICH_BASE="$ENRICH_BASE,\"os_version\":\"$(json_escape "$OS_VERSION")\""
+ENRICH_BASE="$ENRICH_BASE,\"os_build\":\"$(json_escape "$OS_BUILD")\""
+ENRICH_BASE="$ENRICH_BASE,\"os_arch\":\"$(json_escape "$OS_ARCH")\""
+ENRICH_BASE="$ENRICH_BASE,\"collection_utc\":\"$COLLECTION_UTC\""
+ENRICH_BASE="$ENRICH_BASE,\"tool\":\"bumblebee\""
+
+# Endpoint metadata record (single JSON object, .json so SDL parses cleanly)
+cat > "$ENDPOINT_JSON" <<EOF
+{
+  "RecordType": "BumblebeeEndpointInfo",
+  "hostname": "$(json_escape "$HOSTNAME_VAL")",
+  "os_id": "$(json_escape "$OS_ID")",
+  "os_version": "$(json_escape "$OS_VERSION")",
+  "os_build": "$(json_escape "$OS_BUILD")",
+  "os_arch": "$(json_escape "$OS_ARCH")",
+  "collection_utc": "$COLLECTION_UTC",
+  "tool": "bumblebee",
+  "context": "$( test_is_remote_ops && echo remoteops || echo interactive )"
+}
+EOF
+
+write_log "Output dir: $OUT_DIR"
+write_log "Inventory: $INV"
+write_log "Findings: $MERGED"
+write_log "Summary CSV: $SUMMARY_CSV"
+write_log "Endpoint: $ENDPOINT_JSON"
+write_log "Run log: $RUN_LOG"
+write_log "Dataset: $datasetFilePath"
 
 # ---------- config ----------
 ROOTS=(/home /root /opt /usr/local /srv /var/lib)
@@ -207,57 +297,79 @@ for u in "${URLS[@]}"; do
 done
 
 # ---------- 1) deep baseline inventory ----------
-echo "----- deep baseline inventory -----"
-INV="${OUT_DIR}inventory.jsonl"
+write_log "Starting deep baseline inventory"
+INV_RAW="$WORK_DIR/inventory.raw.jsonl"
 "$BUMBLEBEE_BIN" scan \
   --profile deep \
   "${ROOT_ARGS[@]}" \
   --max-duration "$MAX_DURATION" \
-  > "$INV" 2> "${OUT_DIR}inventory.stderr.log"
-echo "inventory_lines=$(wc -l < "$INV")"
+  > "$INV_RAW" 2> "${OUT_DIR}Bumblebee_Inventory${DATE_SUFFIX}.stderr.log"
+
+# Enrich every inventory line: prepend RecordType + endpoint metadata
+awk -v suffix="\"RecordType\":\"BumblebeeInventory\"${ENRICH_BASE}," '
+  /^[[:space:]]*\{/ { sub(/\{/, "{" suffix); print; next }
+  { print }
+' "$INV_RAW" > "$INV"
+INV_LINES=$(wc -l < "$INV" 2>/dev/null | tr -d ' ')
+write_log "inventory_lines=$INV_LINES"
 
 # ---------- 2) per-catalog exposure scans (findings-only) ----------
-echo "----- per-catalog exposure scans -----"
-SUMMARY_CSV="${OUT_DIR}findings_summary.csv"
-echo "catalog,findings,exit_code" > "$SUMMARY_CSV"
-
-MERGED="${OUT_DIR}findings_all.jsonl"
+write_log "Starting per-catalog exposure scans"
+echo "RecordType,catalog,findings,exit_code,hostname,collection_utc" > "$SUMMARY_CSV"
 : > "$MERGED"
 
 shopt -s nullglob
 for cat in "$CATALOG_DIR"/*.json; do
   name="$(basename "$cat" .json)"
-  out="${FINDINGS_DIR}/${name}.jsonl"
-  err="${FINDINGS_DIR}/${name}.stderr.log"
-  echo ">> scanning catalog: $name"
+  out_raw="$WORK_DIR/${name}.raw.jsonl"
+  out="${FINDINGS_DIR}/Bumblebee_Findings_${name}${DATE_SUFFIX}.jsonl"
+  err="${FINDINGS_DIR}/Bumblebee_Findings_${name}${DATE_SUFFIX}.stderr.log"
+  write_log "Scanning catalog: $name"
   "$BUMBLEBEE_BIN" scan \
     --profile deep \
     "${ROOT_ARGS[@]}" \
     --exposure-catalog "$cat" \
     --findings-only \
     --max-duration "$MAX_DURATION" \
-    > "$out" 2> "$err"
+    > "$out_raw" 2> "$err"
   rc=$?
-  lines=$(wc -l < "$out" 2>/dev/null || echo 0)
-  echo "${name},${lines},${rc}" >> "$SUMMARY_CSV"
-  awk -v c="$name" '{ sub(/}[[:space:]]*$/, ",\"catalog\":\""c"\"}"); print }' "$out" >> "$MERGED"
-  echo "   findings=$lines rc=$rc"
+  # Enrich every emitted line with RecordType + catalog + endpoint metadata
+  awk -v c="$name" -v base="$ENRICH_BASE" '
+    BEGIN { suffix = "\"RecordType\":\"BumblebeeFinding\",\"catalog\":\"" c "\"" base "," }
+    /^[[:space:]]*\{/ { sub(/\{/, "{" suffix); print; next }
+    { print }
+  ' "$out_raw" > "$out"
+  lines=$(wc -l < "$out" 2>/dev/null | tr -d ' ')
+  printf 'BumblebeeFindingSummary,%s,%s,%s,%s,%s\n' \
+    "$name" "$lines" "$rc" "$HOSTNAME_VAL" "$COLLECTION_UTC" >> "$SUMMARY_CSV"
+  cat "$out" >> "$MERGED"
+  write_log "  findings=$lines rc=$rc"
 done
 
-# ---------- dataset.json summary (XDR ingestion) ----------
-TOTAL=$(awk -F, 'NR>1{s+=$2} END{print s+0}' "$SUMMARY_CSV")
+# ---------- dataset.json run summary (XDR ingestion) ----------
+TOTAL=$(awk -F, 'NR>1{s+=$3} END{print s+0}' "$SUMMARY_CSV")
+END_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > "$datasetFilePath" <<EOF
 {
+  "RecordType": "BumblebeeScanSummary",
   "tool": "bumblebee",
   "profile": "deep",
-  "host": "$(hostname)",
-  "started_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "hostname": "$(json_escape "$HOSTNAME_VAL")",
+  "os_id": "$(json_escape "$OS_ID")",
+  "os_version": "$(json_escape "$OS_VERSION")",
+  "os_build": "$(json_escape "$OS_BUILD")",
+  "os_arch": "$(json_escape "$OS_ARCH")",
+  "started_utc": "$START_UTC",
+  "end_utc": "$END_UTC",
   "catalogs_scanned": ${#URLS[@]},
   "total_findings": ${TOTAL},
-  "output_dir": "${OUT_DIR}",
-  "inventory_file": "${INV}",
-  "findings_file": "${MERGED}",
-  "summary_csv": "${SUMMARY_CSV}"
+  "inventory_lines": ${INV_LINES:-0},
+  "output_dir": "$(json_escape "$OUT_DIR")",
+  "endpoint_file": "$(json_escape "$ENDPOINT_JSON")",
+  "inventory_file": "$(json_escape "$INV")",
+  "findings_file": "$(json_escape "$MERGED")",
+  "summary_csv": "$(json_escape "$SUMMARY_CSV")",
+  "run_log": "$(json_escape "$RUN_LOG")"
 }
 EOF
 
@@ -265,17 +377,18 @@ EOF
 echo "===== SUMMARY ====="
 cat "$SUMMARY_CSV"
 echo "total_findings=$TOTAL"
+echo "inventory_lines=${INV_LINES:-0}"
 echo "output_dir=$OUT_DIR"
-END_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "end_utc=$END_UTC"
+write_log "Run complete: total_findings=$TOTAL inventory_lines=${INV_LINES:-0}" SUCCESS
 
 # STDOUT JSON summary line — always collected by the Agent and ingested as a
 # single event in Singularity Data Lake even if file collection is not
 # configured to pick up the .jsonl/.csv outputs.
-printf '{"event":"bumblebee_scan_summary","host":"%s","profile":"deep","catalogs_scanned":%d,"total_findings":%d,"inventory_lines":%d,"output_dir":"%s","dataset_file":"%s","end_utc":"%s"}\n' \
-    "$(hostname)" "${#URLS[@]}" "$TOTAL" \
-    "$(wc -l < "$INV" 2>/dev/null | tr -d ' ')" \
-    "$OUT_DIR" "$datasetFilePath" "$END_UTC"
+printf '{"RecordType":"BumblebeeScanSummary","hostname":"%s","profile":"deep","catalogs_scanned":%d,"total_findings":%d,"inventory_lines":%d,"output_dir":"%s","dataset_file":"%s","started_utc":"%s","end_utc":"%s"}\n' \
+    "$(json_escape "$HOSTNAME_VAL")" "${#URLS[@]}" "$TOTAL" "${INV_LINES:-0}" \
+    "$(json_escape "$OUT_DIR")" "$(json_escape "$datasetFilePath")" \
+    "$START_UTC" "$END_UTC"
 
 rm -rf "$WORK_DIR"
 exit 0
