@@ -266,7 +266,16 @@ echo "===== SUMMARY ====="
 cat "$SUMMARY_CSV"
 echo "total_findings=$TOTAL"
 echo "output_dir=$OUT_DIR"
-date -u +"end_utc=%Y-%m-%dT%H:%M:%SZ"
+END_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "end_utc=$END_UTC"
+
+# STDOUT JSON summary line — always collected by the Agent and ingested as a
+# single event in Singularity Data Lake even if file collection is not
+# configured to pick up the .jsonl/.csv outputs.
+printf '{"event":"bumblebee_scan_summary","host":"%s","profile":"deep","catalogs_scanned":%d,"total_findings":%d,"inventory_lines":%d,"output_dir":"%s","dataset_file":"%s","end_utc":"%s"}\n' \
+    "$(hostname)" "${#URLS[@]}" "$TOTAL" \
+    "$(wc -l < "$INV" 2>/dev/null | tr -d ' ')" \
+    "$OUT_DIR" "$datasetFilePath" "$END_UTC"
 
 rm -rf "$WORK_DIR"
 exit 0

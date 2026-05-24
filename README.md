@@ -31,6 +31,22 @@ Outputs:
 | `findings_summary.csv` | `catalog,findings,exit_code` summary |
 | `dataset.json` | Run-level XDR summary |
 
+A final **STDOUT JSON line** (`{"event":"bumblebee_scan_summary",...}`) is also
+emitted. STDOUT is always collected by newer Agents, so this guarantees a
+queryable summary in Singularity Data Lake even when file collection is not
+configured for `$S1_OUTPUT_DIR_PATH`.
+
+### Ingestion notes (AI SIEM / Singularity Data Lake)
+
+- Files with `.json`, `.jsonl`, `.csv` extensions in `$S1_OUTPUT_DIR_PATH` are
+  parsed cleanly by the Agent and forwarded as structured events.
+- Other extensions (e.g. `.log`) are treated as text — one line per event.
+- If you want files written outside `$S1_OUTPUT_DIR_PATH` to be ingested, use
+  RemoteOps **"Specify paths to collect results from"** and list the absolute
+  paths.
+- Sending to AI SIEM also requires the appropriate **Data ingest + retention
+  SKU** and a **Data Export Profile** pointing to Singularity Data Lake.
+
 Env overrides:
 
 - `S1_OUTPUT_DIR_PATH` — RemoteOps output dir (preferred).
