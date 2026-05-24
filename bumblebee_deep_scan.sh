@@ -26,7 +26,7 @@ tryDir() {
     case "$d" in */) : ;; *) d="${d}/" ;; esac
     mkdir -p "$d" 2>/dev/null || return 1
     local probe="${d}.bumblebee_write_test.$$"
-    if : > "$probe" 2>/dev/null; then
+    if ( : > "$probe" ) 2>/dev/null; then
         rm -f "$probe"
         resultOutputDir="$d"
         return 0
@@ -77,22 +77,56 @@ GH_API="https://api.github.com/repos/perplexityai/bumblebee/contents/threat_inte
 # Expand PATH for common user/install locations
 export PATH="$PATH:/usr/local/bin:/usr/local/sbin:/opt/bumblebee/bin:$HOME/.local/bin:$HOME/bin:$HOME/go/bin"
 
+# Resolve a candidate path to an actual executable bumblebee binary.
+# Accepts file or directory; if directory, probes common sub-paths.
+resolveBin() {
+    local p="$1"
+    [ -z "$p" ] && return 1
+    if [ -f "$p" ] && [ -x "$p" ]; then
+        printf '%s\n' "$p"; return 0
+    fi
+    if [ -d "$p" ]; then
+        local sub
+        for sub in bumblebee bin/bumblebee dist/bumblebee build/bumblebee \
+                   target/release/bumblebee target/debug/bumblebee \
+                   cmd/bumblebee/bumblebee; do
+            if [ -f "$p/$sub" ] && [ -x "$p/$sub" ]; then
+                printf '%s\n' "$p/$sub"; return 0
+            fi
+        done
+        # Fall back: first executable named bumblebee under that dir
+        local found
+        found="$(find "$p" -maxdepth 4 -type f -name bumblebee -perm -u+x 2>/dev/null | head -n1)"
+        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
+    fi
+    return 1
+}
+
 # Find bumblebee binary
-BUMBLEBEE_BIN="$(command -v bumblebee 2>/dev/null || true)"
+BUMBLEBEE_BIN=""
+if [ -n "${BUMBLEBEE_BIN_OVERRIDE:-}" ]; then
+    BUMBLEBEE_BIN="$(resolveBin "$BUMBLEBEE_BIN_OVERRIDE" || true)"
+fi
 if [ -z "$BUMBLEBEE_BIN" ]; then
-    for cand in /usr/local/bin/bumblebee /opt/bumblebee/bin/bumblebee \
+    inpath="$(command -v bumblebee 2>/dev/null || true)"
+    [ -n "$inpath" ] && BUMBLEBEE_BIN="$(resolveBin "$inpath" || true)"
+fi
+if [ -z "$BUMBLEBEE_BIN" ]; then
+    for cand in /usr/local/bin/bumblebee /opt/bumblebee /opt/bumblebee/bin/bumblebee \
                 "$HOME/.local/bin/bumblebee" "$HOME/bin/bumblebee" \
                 "$HOME/go/bin/bumblebee" "$HOME/bumblebee"; do
-        [ -x "$cand" ] && BUMBLEBEE_BIN="$cand" && break
+        BUMBLEBEE_BIN="$(resolveBin "$cand" || true)"
+        [ -n "$BUMBLEBEE_BIN" ] && break
     done
 fi
 if [ -z "$BUMBLEBEE_BIN" ]; then
     found="$(find / -maxdepth 6 -type f -name bumblebee -perm -u+x 2>/dev/null | head -n1)"
     [ -n "$found" ] && BUMBLEBEE_BIN="$found"
 fi
-if [ -z "$BUMBLEBEE_BIN" ]; then
-    echo "ERROR: bumblebee not found in PATH or common install locations"
+if [ -z "$BUMBLEBEE_BIN" ] || [ ! -x "$BUMBLEBEE_BIN" ]; then
+    echo "ERROR: bumblebee executable not found"
     echo "PATH=$PATH"
+    echo "Set BUMBLEBEE_BIN_OVERRIDE=/full/path/to/bumblebee and retry."
     exit 127
 fi
 echo "bumblebee binary: $BUMBLEBEE_BIN"
