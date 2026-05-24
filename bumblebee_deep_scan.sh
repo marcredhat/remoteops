@@ -123,10 +123,45 @@ if [ -z "$BUMBLEBEE_BIN" ]; then
     found="$(find / -maxdepth 6 -type f -name bumblebee -perm -u+x 2>/dev/null | head -n1)"
     [ -n "$found" ] && BUMBLEBEE_BIN="$found"
 fi
+
+# If still no binary, look for a Go source tree and build it.
+buildFromSource() {
+    local src=""
+    for cand in "${BUMBLEBEE_SRC_DIR:-}" "$HOME/bumblebee" "$HOME/src/bumblebee" \
+                /opt/bumblebee /usr/local/src/bumblebee; do
+        [ -z "$cand" ] && continue
+        if [ -f "$cand/go.mod" ] && [ -d "$cand/cmd" ]; then
+            src="$cand"; break
+        fi
+    done
+    [ -z "$src" ] && return 1
+    echo "Found bumblebee source at: $src"
+    if ! command -v go >/dev/null 2>&1; then
+        echo "ERROR: 'go' not in PATH; cannot build from source"
+        echo "Install Go (e.g. 'sudo dnf install -y golang') or provide a prebuilt binary"
+        return 1
+    fi
+    echo "Building bumblebee from source (go build)..."
+    local outbin="$src/bumblebee"
+    ( cd "$src" && GOFLAGS="-trimpath" go build -o "$outbin" ./cmd/bumblebee ) \
+        || { echo "ERROR: go build failed"; return 1; }
+    [ -x "$outbin" ] || { echo "ERROR: built binary missing: $outbin"; return 1; }
+    BUMBLEBEE_BIN="$outbin"
+    echo "Built: $BUMBLEBEE_BIN"
+    return 0
+}
+
 if [ -z "$BUMBLEBEE_BIN" ] || [ ! -x "$BUMBLEBEE_BIN" ]; then
-    echo "ERROR: bumblebee executable not found"
+    buildFromSource || true
+fi
+
+if [ -z "$BUMBLEBEE_BIN" ] || [ ! -x "$BUMBLEBEE_BIN" ]; then
+    echo "ERROR: bumblebee executable not found and could not be built"
     echo "PATH=$PATH"
-    echo "Set BUMBLEBEE_BIN_OVERRIDE=/full/path/to/bumblebee and retry."
+    echo "Options:"
+    echo "  - install Go and retry (script will build from \$HOME/bumblebee)"
+    echo "  - set BUMBLEBEE_SRC_DIR=/path/to/source and retry"
+    echo "  - set BUMBLEBEE_BIN_OVERRIDE=/full/path/to/bumblebee and retry"
     exit 127
 fi
 echo "bumblebee binary: $BUMBLEBEE_BIN"
