@@ -36,3 +36,29 @@ Env overrides:
 - `S1_OUTPUT_DIR_PATH` — RemoteOps output dir (preferred).
 - `S1_XDR_OUTPUT_FILE_PATH` — Override path for `dataset.json`.
 - `MAX_DURATION` — Per-scan timeout, default `30m`.
+- `BUMBLEBEE_BIN_OVERRIDE` — Force a specific bumblebee binary path.
+- `BUMBLEBEE_SRC_DIR` — Bumblebee source directory (for auto-build fallback).
+
+### Endpoint provisioning (RemoteOps)
+
+The Agent runs scripts as **root** with a minimal environment. Install the
+bumblebee binary system-wide on each endpoint once, so the scan script just
+picks it up from `PATH`:
+
+```bash
+# One-shot, runs as root, builds from upstream and installs to /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/marcredhat/remoteops/main/install_bumblebee.sh \
+  | sudo bash
+```
+
+Or with explicit control:
+
+```bash
+sudo BUMBLEBEE_REF=main ./install_bumblebee.sh
+sudo BUMBLEBEE_SRC_DIR=/opt/bumblebee ./install_bumblebee.sh   # use existing source
+sudo DEST=/usr/local/bin/bumblebee ./install_bumblebee.sh      # custom destination
+```
+
+After install, `bumblebee_deep_scan.sh` will find the binary on `PATH` and skip
+the build step — suitable for restricted RemoteOps execution where outbound
+package installs are not desirable at scan time.
