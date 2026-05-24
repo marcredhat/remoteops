@@ -168,7 +168,7 @@ echo "bumblebee binary: $BUMBLEBEE_BIN"
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl missing"; exit 127; }
 "$BUMBLEBEE_BIN" --version || true
-"$BUMBLEBEE_BIN" self-test || echo "WARN: self-test reported issues, continuing"
+"$BUMBLEBEE_BIN" selftest || echo "WARN: selftest reported issues, continuing"
 
 # ---------- build root args ----------
 ROOT_ARGS=()
