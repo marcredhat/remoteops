@@ -18,28 +18,43 @@ id
 date -u +"start_utc=%Y-%m-%dT%H:%M:%SZ"
 
 # ---------- output dir (SentinelOne RemoteOps convention) ----------
+# Pick a directory we can actually write to.
+# Order: $S1_OUTPUT_DIR_PATH -> /opt/sentinelone/rso/ -> $HOME/bumblebee-rso/ -> $(pwd)/
+tryDir() {
+    local d="$1"
+    [ -z "$d" ] && return 1
+    case "$d" in */) : ;; *) d="${d}/" ;; esac
+    mkdir -p "$d" 2>/dev/null || return 1
+    local probe="${d}.bumblebee_write_test.$$"
+    if : > "$probe" 2>/dev/null; then
+        rm -f "$probe"
+        resultOutputDir="$d"
+        return 0
+    fi
+    return 1
+}
+
 setResultOutputDir() {
-    resultOutputDir="/opt/sentinelone/rso/"
-    if [ -n "${S1_OUTPUT_DIR_PATH:-}" ]; then
-        resultOutputDir="$S1_OUTPUT_DIR_PATH"
-    fi
-    case "$resultOutputDir" in
-        */) : ;;
-        *)  resultOutputDir="${resultOutputDir}/" ;;
-    esac
-    if ! mkdir -p "$resultOutputDir" 2>/dev/null; then
-        resultOutputDir="$(pwd)/"
-        echo "WARN: falling back to cwd for outputs"
-    fi
+    resultOutputDir=""
+    tryDir "${S1_OUTPUT_DIR_PATH:-}" \
+      || tryDir "/opt/sentinelone/rso/" \
+      || tryDir "$HOME/bumblebee-rso/" \
+      || tryDir "$(pwd)/" \
+      || { echo "ERROR: no writable output dir found"; exit 5; }
     echo "Script output directory is: $resultOutputDir"
 }
 
 setDataSetFilePath() {
     datasetFilePath="${resultOutputDir}dataset.json"
     if [ -n "${S1_XDR_OUTPUT_FILE_PATH:-}" ]; then
-        datasetFilePath="$S1_XDR_OUTPUT_FILE_PATH"
+        if mkdir -p "$(dirname "$S1_XDR_OUTPUT_FILE_PATH")" 2>/dev/null \
+           && : > "${S1_XDR_OUTPUT_FILE_PATH}.test.$$" 2>/dev/null; then
+            rm -f "${S1_XDR_OUTPUT_FILE_PATH}.test.$$"
+            datasetFilePath="$S1_XDR_OUTPUT_FILE_PATH"
+        else
+            echo "WARN: S1_XDR_OUTPUT_FILE_PATH not writable, using ${datasetFilePath}"
+        fi
     fi
-    mkdir -p "$(dirname "$datasetFilePath")" 2>/dev/null || true
     echo "XDR json output file path: $datasetFilePath"
 }
 
@@ -50,7 +65,8 @@ OUT_DIR="$resultOutputDir"
 WORK_DIR="$(mktemp -d -t bumblebee-XXXXXX)"
 CATALOG_DIR="$WORK_DIR/threat_intel"
 FINDINGS_DIR="${OUT_DIR}findings"
-mkdir -p "$CATALOG_DIR" "$FINDINGS_DIR"
+mkdir -p "$CATALOG_DIR" "$FINDINGS_DIR" \
+  || { echo "ERROR: cannot create work/findings dirs"; exit 6; }
 
 # ---------- config ----------
 ROOTS=(/home /root /opt /usr/local /srv /var/lib)
@@ -58,10 +74,32 @@ MAX_DURATION="${MAX_DURATION:-30m}"
 GH_API="https://api.github.com/repos/perplexityai/bumblebee/contents/threat_intel?ref=main"
 
 # ---------- sanity ----------
-command -v bumblebee >/dev/null 2>&1 || { echo "ERROR: bumblebee not in PATH"; exit 127; }
-command -v curl      >/dev/null 2>&1 || { echo "ERROR: curl missing";      exit 127; }
-bumblebee --version || true
-bumblebee self-test || echo "WARN: self-test reported issues, continuing"
+# Expand PATH for common user/install locations
+export PATH="$PATH:/usr/local/bin:/usr/local/sbin:/opt/bumblebee/bin:$HOME/.local/bin:$HOME/bin:$HOME/go/bin"
+
+# Find bumblebee binary
+BUMBLEBEE_BIN="$(command -v bumblebee 2>/dev/null || true)"
+if [ -z "$BUMBLEBEE_BIN" ]; then
+    for cand in /usr/local/bin/bumblebee /opt/bumblebee/bin/bumblebee \
+                "$HOME/.local/bin/bumblebee" "$HOME/bin/bumblebee" \
+                "$HOME/go/bin/bumblebee" "$HOME/bumblebee"; do
+        [ -x "$cand" ] && BUMBLEBEE_BIN="$cand" && break
+    done
+fi
+if [ -z "$BUMBLEBEE_BIN" ]; then
+    found="$(find / -maxdepth 6 -type f -name bumblebee -perm -u+x 2>/dev/null | head -n1)"
+    [ -n "$found" ] && BUMBLEBEE_BIN="$found"
+fi
+if [ -z "$BUMBLEBEE_BIN" ]; then
+    echo "ERROR: bumblebee not found in PATH or common install locations"
+    echo "PATH=$PATH"
+    exit 127
+fi
+echo "bumblebee binary: $BUMBLEBEE_BIN"
+
+command -v curl >/dev/null 2>&1 || { echo "ERROR: curl missing"; exit 127; }
+"$BUMBLEBEE_BIN" --version || true
+"$BUMBLEBEE_BIN" self-test || echo "WARN: self-test reported issues, continuing"
 
 # ---------- build root args ----------
 ROOT_ARGS=()
@@ -94,7 +132,7 @@ done
 # ---------- 1) deep baseline inventory ----------
 echo "----- deep baseline inventory -----"
 INV="${OUT_DIR}inventory.jsonl"
-bumblebee scan \
+"$BUMBLEBEE_BIN" scan \
   --profile deep \
   "${ROOT_ARGS[@]}" \
   --max-duration "$MAX_DURATION" \
@@ -115,7 +153,7 @@ for cat in "$CATALOG_DIR"/*.json; do
   out="${FINDINGS_DIR}/${name}.jsonl"
   err="${FINDINGS_DIR}/${name}.stderr.log"
   echo ">> scanning catalog: $name"
-  bumblebee scan \
+  "$BUMBLEBEE_BIN" scan \
     --profile deep \
     "${ROOT_ARGS[@]}" \
     --exposure-catalog "$cat" \
