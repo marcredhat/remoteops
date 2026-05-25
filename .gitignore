@@ -1,0 +1,26 @@
+# Local artifacts — never commit
+*.jsonl
+*.log
+.env
+.env.*
+
+# Secrets / tenant-specific config
+config.json
+config.json.*
+credentials.json
+*token*.txt
+*.pem
+*.key
+
+# Output directories
+bumblebee-rso/
+simulated_exposure.jsonl
+deploy_now*.sh
+upload_simulated.sh
+
+# Editor / OS junk
+.DS_Store
+__pycache__/
+*.pyc
+.idea/
+.vscode/
