@@ -81,6 +81,7 @@ def generate(catalog_paths: list[str], host_pool: list[str], now_iso: str):
                 host = stable_host(seed, host_pool)
                 yield {
                     "RecordType": "BumblebeeSimulatedExposure",
+                    "gen_v": 2,
                     "tool": "bumblebee",
                     "simulated": True,
                     "collection_utc": now_iso,
@@ -88,8 +89,8 @@ def generate(catalog_paths: list[str], host_pool: list[str], now_iso: str):
                     "catalog": catalog_name,
                     "ecosystem": ecosystem,
                     "package": package,
-                    "version": ver_str,
-                    "severity": severity,
+                    "pkg_version": ver_str,
+                    "pkg_severity": severity,
                     "entry_id": entry_id,
                     "source": "perplexityai/bumblebee/threat_intel",
                 }
