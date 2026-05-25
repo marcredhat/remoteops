@@ -108,7 +108,7 @@
           "title": "Findings by host (split by catalog)",
           "graphStyle": "stacked_bar",
           "xAxis": "grouped_data",
-          "query": "RecordType='BumblebeeFinding' | let catalog_safe = replace_all(catalog, '-', '_') | group n=count() by hostname, catalog_safe | sort hostname | transpose catalog_safe on hostname",
+          "query": "RecordType='BumblebeeFinding' | group n=count() by hostname, catalog | sort hostname | transpose catalog on hostname",
           "layout": { "w": 30, "h": 18, "x": 0, "y": 12 }
         },
         {
